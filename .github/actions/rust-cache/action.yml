@@ -1,0 +1,17 @@
+name: Rust cache
+description: Restores rust cache
+
+inputs:
+  cache-name:
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Restore Rust cache
+      uses: Swatinem/rust-cache@v2
+      with:
+        workspaces: |
+          packages/shared/lib
+          packages/crypto/lib
+        shared-key: ${{ inputs.cache-name }}
