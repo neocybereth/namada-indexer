@@ -118,7 +118,7 @@ impl Balance {
             owner: Id::Account(address.to_string()),
             token,
             amount: Amount::fake(),
-            height: (0..10000).fake::<u32>(),
+            height: 0,
         }
     }
 }
