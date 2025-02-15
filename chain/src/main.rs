@@ -17,23 +17,27 @@ use chain::services::{
 use chrono::{NaiveDateTime, Utc};
 use clap::Parser;
 use deadpool_diesel::postgres::Object;
+use futures::future::FutureExt;
+use futures::stream::StreamExt;
 use namada_sdk::time::DateTimeUtc;
 use orm::migrations::run_migrations;
 use repository::pgf as namada_pgf_repository;
+use shared::balance::TokenSupply;
 use shared::block::Block;
 use shared::block_result::BlockResult;
 use shared::checksums::Checksums;
 use shared::crawler::crawl;
 use shared::crawler_state::ChainCrawlerState;
 use shared::error::{AsDbError, AsRpcError, ContextDbInteractError, MainError};
+use shared::futures::AwaitContainer;
 use shared::id::Id;
 use shared::token::Token;
 use shared::utils::BalanceChange;
 use shared::validator::ValidatorSet;
-use tendermint_rpc::endpoint::block::Response as TendermintBlockResponse;
 use tendermint_rpc::HttpClient;
-use tokio_retry::strategy::{jitter, ExponentialBackoff};
+use tendermint_rpc::endpoint::block::Response as TendermintBlockResponse;
 use tokio_retry::Retry;
+use tokio_retry::strategy::{ExponentialBackoff, jitter};
 
 #[tokio::main]
 async fn main() -> Result<(), MainError> {
@@ -235,6 +239,30 @@ async fn crawling_fn(
         ));
     let addresses = block.addresses_with_balance_change(&native_token);
 
+    let token_supplies = first_block_in_epoch
+        .eq(&block_height)
+        .then_some(async {
+            let native_fut = namada_service::get_native_token_supply(
+                &client,
+                &native_token,
+                epoch,
+            )
+            .map(|result| result.into_rpc_error());
+
+            let non_native_fut =
+                query_non_native_supplies(&client, &conn, epoch);
+
+            let (native, mut non_native) =
+                futures::try_join!(native_fut, non_native_fut)?;
+
+            non_native.push(native);
+
+            Ok(non_native)
+        })
+        .future()
+        .await
+        .transpose()?;
+
     let validators_addresses = if first_block_in_epoch.eq(&block_height) {
         namada_service::get_all_consensus_validators_addresses_at(
             &client,
@@ -409,6 +437,11 @@ async fn crawling_fn(
                 repository::balance::insert_tokens(
                     transaction_conn,
                     ibc_tokens,
+                )?;
+
+                repository::balance::insert_token_supplies(
+                    transaction_conn,
+                    token_supplies.into_iter().flatten(),
                 )?;
 
                 repository::block::upsert_block(
@@ -720,4 +753,31 @@ async fn get_block(
     );
 
     Ok((block, tm_block_response, epoch))
+}
+
+async fn query_non_native_supplies(
+    client: &HttpClient,
+    conn: &Object,
+    epoch: u32,
+) -> Result<Vec<TokenSupply>, MainError> {
+    let token_addresses = db_service::get_non_native_tokens(conn)
+        .await
+        .into_db_error()?;
+
+    let mut buffer = Vec::with_capacity(1);
+
+    let mut stream = futures::stream::iter(token_addresses)
+        .map(|address| async move {
+            namada_service::get_token_supply(client, address, epoch)
+                .await
+                .into_rpc_error()
+        })
+        .buffer_unordered(32);
+
+    while let Some(maybe_supply) = stream.next().await {
+        let supply = maybe_supply?;
+        buffer.push(supply);
+    }
+
+    Ok(buffer)
 }

@@ -10,9 +10,9 @@ use axum_prometheus::PrometheusMetricLayer;
 use lazy_static::lazy_static;
 use namada_sdk::tendermint_rpc::HttpClient;
 use serde_json::json;
+use tower::ServiceBuilder;
 use tower::buffer::BufferLayer;
 use tower::limit::RateLimitLayer;
-use tower::ServiceBuilder;
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::trace::TraceLayer;
 
@@ -135,6 +135,10 @@ impl ApplicationServer {
                 .route("/chain/parameters", get(chain_handlers::get_parameters))
                 .route("/chain/rpc-url", get(chain_handlers::get_rpc_url))
                 .route("/chain/token", get(chain_handlers::get_tokens))
+                .route(
+                    "/chain/token-supply",
+                    get(chain_handlers::get_token_supply),
+                )
                 .route(
                     "/chain/block/latest",
                     get(chain_handlers::get_last_processed_block),
